@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+
+# Local user data
+tasks.json
+settings.json
+history/
+daily_history.sqlite3
+daily_history.jsonl
+
+# Local machine startup entry with absolute paths
+daily-todo.desktop
+
+# Logs and temporary files
+*.log
+.DS_Store
+
+# Codex/local assistant metadata
+.agents/
+.codex/
