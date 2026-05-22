@@ -132,8 +132,8 @@ class DesktopTodo:
         self.root.minsize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
         self.root.attributes("-topmost", True)
         self.root.bind("<Map>", self.restore_borderless)
-        self.root.bind("<Escape>", lambda _event: self.force_close())
-        self.root.bind("<Control-q>", lambda _event: self.force_close())
+        self.root.bind("<Escape>", lambda _event: self.minimize_window())
+        self.root.bind("<Control-q>", lambda _event: self.minimize_window())
 
         self.tasks = self.load_tasks()
         self.init_history_storage()
