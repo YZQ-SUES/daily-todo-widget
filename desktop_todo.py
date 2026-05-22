@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import json
+import math
 import os
+import random
 import re
 import shutil
 import sqlite3
@@ -163,6 +165,11 @@ class DesktopTodo:
         self.new_task = tk.StringVar()
         self.new_repeat = tk.StringVar(value="单次")
         self.new_custom = None
+        self.today_all_done = False
+        self.celebration_enabled = False
+        self.firework_canvas = None
+        self.firework_overlay = None
+        self.firework_after_ids = []
 
         self.title_font = font.Font(family="Noto Sans CJK SC", size=15, weight="bold")
         self.body_font = font.Font(family="Noto Sans CJK SC", size=12, weight="bold")
@@ -176,6 +183,7 @@ class DesktopTodo:
         self.setup_status_icon()
         self.schedule_midnight_rollover()
         self.root.withdraw()
+        self.celebration_enabled = True
 
     def place_top_right(self) -> None:
         self.root.update_idletasks()
@@ -502,6 +510,141 @@ class DesktopTodo:
         self.status_label.configure(text=f"{done_count} / {len(visible_tasks)} 已完成")
         self.update_task_count_badge()
         self.draw_progress()
+        self.maybe_celebrate_completion(visible_tasks, done_count)
+
+    def maybe_celebrate_completion(self, visible_tasks: list[Task], done_count: int) -> None:
+        all_done = bool(visible_tasks) and done_count == len(visible_tasks)
+        should_celebrate = (
+            self.celebration_enabled
+            and all_done
+            and not self.today_all_done
+            and self.root.state() != "withdrawn"
+        )
+        self.today_all_done = all_done
+        if should_celebrate:
+            self.start_fireworks()
+
+    def start_fireworks(self) -> None:
+        self.stop_fireworks()
+        self.root.update_idletasks()
+        width = max(220, self.task_area.winfo_width())
+        height = max(220, self.task_area.winfo_height())
+        x = self.task_area.winfo_rootx()
+        y = self.task_area.winfo_rooty()
+        transparent = "#010203"
+
+        overlay = tk.Toplevel(self.root)
+        overlay.overrideredirect(True)
+        overlay.attributes("-topmost", True)
+        overlay.geometry(f"{width}x{height}+{x}+{y}")
+        overlay.configure(bg=transparent)
+        try:
+            overlay.wm_attributes("-transparentcolor", transparent)
+        except tk.TclError:
+            overlay.attributes("-alpha", 0.9)
+            transparent = self.settings["background"]
+            overlay.configure(bg=transparent)
+
+        canvas = tk.Canvas(
+            overlay,
+            bg=transparent,
+            bd=0,
+            highlightthickness=0,
+        )
+        canvas.pack(fill="both", expand=True)
+        self.firework_overlay = overlay
+        self.firework_canvas = canvas
+
+        palette = [
+            self.settings["accent"],
+            self.settings["done"],
+            "#ffffff",
+            "#ffd166",
+            "#62d196",
+            "#55c7ff",
+            "#f472b6",
+        ]
+        bursts = [
+            (width * 0.26, height * 0.24),
+            (width * 0.68, height * 0.28),
+            (width * 0.48, height * 0.44),
+        ]
+        particles = []
+        for center_x, center_y in bursts:
+            for index in range(28):
+                angle = (math.tau / 28) * index + random.uniform(-0.08, 0.08)
+                speed = random.uniform(4.0, 8.5)
+                particles.append(
+                    {
+                        "x": center_x,
+                        "y": center_y,
+                        "vx": math.cos(angle) * speed,
+                        "vy": math.sin(angle) * speed,
+                        "color": random.choice(palette),
+                        "size": random.uniform(2.5, 5.5),
+                    }
+                )
+        canvas.create_text(
+            width / 2,
+            height * 0.38,
+            text="今日任务完成",
+            fill=self.settings["text"],
+            font=self.title_font,
+            tags=("firework", "firework_message"),
+        )
+        canvas.create_text(
+            width / 2,
+            height * 0.46,
+            text="休息一下也很好",
+            fill=self.mix(self.settings["text"], self.settings["background"], 0.22),
+            font=self.small_font,
+            tags=("firework", "firework_message"),
+        )
+        canvas.tag_raise("firework")
+        self.animate_fireworks(canvas, particles, 0)
+
+    def animate_fireworks(self, canvas: tk.Canvas, particles: list[dict], frame: int) -> None:
+        if self.firework_canvas is not canvas or not canvas.winfo_exists():
+            return
+        canvas.delete("firework_spark")
+        fade = max(0.0, 1.0 - frame / 42)
+        for particle in particles:
+            particle["x"] += particle["vx"]
+            particle["y"] += particle["vy"]
+            particle["vy"] += 0.16
+            particle["vx"] *= 0.985
+            particle["vy"] *= 0.985
+            radius = max(1.0, particle["size"] * fade)
+            canvas.create_oval(
+                particle["x"] - radius,
+                particle["y"] - radius,
+                particle["x"] + radius,
+                particle["y"] + radius,
+                fill=particle["color"],
+                outline="",
+                tags=("firework", "firework_spark"),
+            )
+        canvas.tag_raise("firework")
+
+        if frame >= 42:
+            self.stop_fireworks()
+            return
+        after_id = self.root.after(38, lambda: self.animate_fireworks(canvas, particles, frame + 1))
+        self.firework_after_ids.append(after_id)
+
+    def stop_fireworks(self) -> None:
+        for after_id in self.firework_after_ids:
+            try:
+                self.root.after_cancel(after_id)
+            except Exception:
+                pass
+        self.firework_after_ids = []
+        if self.firework_canvas is not None and self.firework_canvas.winfo_exists():
+            self.firework_canvas.delete("firework")
+        self.firework_canvas = None
+        if self.firework_overlay is not None and self.firework_overlay.winfo_exists():
+            self.firework_overlay.destroy()
+        self.firework_overlay = None
 
     def update_task_count_badge(self) -> None:
         count = str(len(self.tasks))
@@ -600,6 +743,7 @@ class DesktopTodo:
             self.bind_task_scroll_widget(widget)
 
     def show_task_list_popup(self) -> None:
+        self.stop_fireworks()
         self.close_task_list_popup()
         self.close_color_popup()
         self.close_repeat_popup()
