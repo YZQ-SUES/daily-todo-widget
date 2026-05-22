@@ -45,10 +45,10 @@ DEFAULT_SETTINGS = {
     "done": "#76a7ff",
     "geometry": "",
     "active_date": "",
-    "title_font_size": 15,
-    "body_font_size": 12,
-    "small_font_size": 9,
-    "icon_font_size": 15,
+    "title_font_size": 20,
+    "body_font_size": 16,
+    "small_font_size": 12,
+    "icon_font_size": 20,
 }
 
 REPEAT_OPTIONS = ("单次", "每天", "工作日", "自定义")
@@ -176,10 +176,10 @@ class DesktopTodo:
         self.firework_overlay = None
         self.firework_after_ids = []
 
-        self.title_font = font.Font(family="Noto Sans CJK SC", size=self.font_setting("title_font_size"), weight="bold")
-        self.body_font = font.Font(family="Noto Sans CJK SC", size=self.font_setting("body_font_size"), weight="bold")
-        self.small_font = font.Font(family="Noto Sans CJK SC", size=self.font_setting("small_font_size"), weight="bold")
-        self.icon_font = font.Font(family="Noto Sans CJK SC", size=self.font_setting("icon_font_size"), weight="bold")
+        self.title_font = self.make_font("title_font_size")
+        self.body_font = self.make_font("body_font_size")
+        self.small_font = self.make_font("small_font_size")
+        self.icon_font = self.make_font("icon_font_size")
 
         self.place_top_right()
         self.build_ui()
@@ -718,7 +718,14 @@ class DesktopTodo:
         )
         text.pack(side="left", fill="x", expand=True)
         if task.done:
-            text.configure(font=font.Font(family="Noto Sans CJK SC", size=self.font_setting("body_font_size"), weight="bold", overstrike=True))
+            text.configure(
+                font=font.Font(
+                    family="Noto Sans CJK SC",
+                    size=-self.font_setting("body_font_size"),
+                    weight="bold",
+                    overstrike=True,
+                )
+            )
 
         repeat_button = tk.Button(
             content,
@@ -1781,10 +1788,10 @@ class DesktopTodo:
         body.pack(fill="both", expand=True, padx=12, pady=(2, 12))
 
         items = [
-            ("标题", "title_font_size", 10, 26),
-            ("正文/任务", "body_font_size", 9, 22),
-            ("小按钮/标签", "small_font_size", 7, 18),
-            ("图标按钮", "icon_font_size", 10, 28),
+            ("标题", "title_font_size", 16, 24),
+            ("正文/任务", "body_font_size", 13, 19),
+            ("小按钮/标签", "small_font_size", 10, 14),
+            ("图标按钮", "icon_font_size", 16, 24),
         ]
         for label_text, key, minimum, maximum in items:
             row = tk.Frame(body, bg=self.settings["background"])
@@ -1839,17 +1846,33 @@ class DesktopTodo:
         self.render_tasks()
 
     def apply_font_settings(self) -> None:
-        self.title_font.configure(size=self.font_setting("title_font_size"))
-        self.body_font.configure(size=self.font_setting("body_font_size"))
-        self.small_font.configure(size=self.font_setting("small_font_size"))
-        self.icon_font.configure(size=self.font_setting("icon_font_size"))
+        self.title_font.configure(size=-self.font_setting("title_font_size"))
+        self.body_font.configure(size=-self.font_setting("body_font_size"))
+        self.small_font.configure(size=-self.font_setting("small_font_size"))
+        self.icon_font.configure(size=-self.font_setting("icon_font_size"))
+
+    def make_font(self, key: str, *, overstrike: bool = False) -> font.Font:
+        return font.Font(
+            family="Noto Sans CJK SC",
+            size=-self.font_setting(key),
+            weight="bold",
+            overstrike=overstrike,
+        )
 
     def font_setting(self, key: str) -> int:
         default = int(DEFAULT_SETTINGS[key])
+        limits = {
+            "title_font_size": (16, 24),
+            "body_font_size": (13, 19),
+            "small_font_size": (10, 14),
+            "icon_font_size": (16, 24),
+        }
         try:
-            return int(self.settings.get(key, default))
+            size = int(self.settings.get(key, default))
         except (TypeError, ValueError):
             return default
+        minimum, maximum = limits.get(key, (7, 28))
+        return max(minimum, min(maximum, size))
 
     def close_font_popup(self) -> None:
         if self.font_popup is not None and self.font_popup.winfo_exists():
