@@ -45,6 +45,10 @@ DEFAULT_SETTINGS = {
     "done": "#76a7ff",
     "geometry": "",
     "active_date": "",
+    "title_font_size": 15,
+    "body_font_size": 12,
+    "small_font_size": 9,
+    "icon_font_size": 15,
 }
 
 REPEAT_OPTIONS = ("单次", "每天", "工作日", "自定义")
@@ -150,6 +154,7 @@ class DesktopTodo:
         self.resize_start_root_y = 0
         self.resize_mode = "corner"
         self.color_popup = None
+        self.font_popup = None
         self.repeat_popup = None
         self.custom_popup = None
         self.task_list_popup = None
@@ -171,10 +176,10 @@ class DesktopTodo:
         self.firework_overlay = None
         self.firework_after_ids = []
 
-        self.title_font = font.Font(family="Noto Sans CJK SC", size=15, weight="bold")
-        self.body_font = font.Font(family="Noto Sans CJK SC", size=12, weight="bold")
-        self.small_font = font.Font(family="Noto Sans CJK SC", size=9, weight="bold")
-        self.icon_font = font.Font(family="Noto Sans CJK SC", size=15, weight="bold")
+        self.title_font = font.Font(family="Noto Sans CJK SC", size=self.font_setting("title_font_size"), weight="bold")
+        self.body_font = font.Font(family="Noto Sans CJK SC", size=self.font_setting("body_font_size"), weight="bold")
+        self.small_font = font.Font(family="Noto Sans CJK SC", size=self.font_setting("small_font_size"), weight="bold")
+        self.icon_font = font.Font(family="Noto Sans CJK SC", size=self.font_setting("icon_font_size"), weight="bold")
 
         self.place_top_right()
         self.build_ui()
@@ -323,9 +328,11 @@ class DesktopTodo:
 
         footer = tk.Frame(self.panel)
         footer.pack(fill="x", padx=18, pady=(0, 14))
+        for column in range(5):
+            footer.grid_columnconfigure(column, weight=1, uniform="footer")
 
         self.task_list_wrapper = tk.Frame(footer, bg=self.settings["background"])
-        self.task_list_wrapper.pack(side="left", padx=(0, 8))
+        self.task_list_wrapper.grid(row=0, column=0, sticky="ew", padx=(0, 4), pady=(8, 0))
 
         self.task_list_btn = tk.Button(
             self.task_list_wrapper,
@@ -333,9 +340,9 @@ class DesktopTodo:
             command=self.show_task_list_popup,
             bd=0,
             font=self.small_font,
-            anchor="w",
+            anchor="center",
         )
-        self.task_list_btn.pack(padx=(0, 10), pady=(8, 0), ipadx=12, ipady=4)
+        self.task_list_btn.pack(fill="x", padx=(0, 10), ipady=4)
 
         self.task_count_badge = tk.Canvas(
             self.task_list_wrapper,
@@ -354,7 +361,7 @@ class DesktopTodo:
             bd=0,
             font=self.small_font,
         )
-        self.history_btn.pack(side="right", padx=(8, 0), ipadx=12, ipady=4)
+        self.history_btn.grid(row=0, column=4, sticky="ew", padx=(4, 0), pady=(8, 0), ipady=4)
 
         self.color_btn = tk.Button(
             footer,
@@ -363,7 +370,16 @@ class DesktopTodo:
             bd=0,
             font=self.small_font,
         )
-        self.color_btn.pack(side="right", padx=(8, 0), ipadx=12, ipady=4)
+        self.color_btn.grid(row=0, column=3, sticky="ew", padx=4, pady=(8, 0), ipady=4)
+
+        self.font_size_btn = tk.Button(
+            footer,
+            text="字体大小",
+            command=self.show_font_size_popup,
+            bd=0,
+            font=self.small_font,
+        )
+        self.font_size_btn.grid(row=0, column=2, sticky="ew", padx=4, pady=(8, 0), ipady=4)
 
         self.bg_btn = tk.Button(
             footer,
@@ -372,7 +388,7 @@ class DesktopTodo:
             bd=0,
             font=self.small_font,
         )
-        self.bg_btn.pack(side="right", padx=(8, 0), ipadx=12, ipady=4)
+        self.bg_btn.grid(row=0, column=1, sticky="ew", padx=4, pady=(8, 0), ipady=4)
 
         self.right_resize_zone = tk.Frame(self.root, cursor="sb_h_double_arrow", width=4)
         self.right_resize_zone.place(relx=1, rely=0, relheight=1, anchor="ne")
@@ -427,6 +443,7 @@ class DesktopTodo:
         for button in [
             self.task_list_btn,
             self.color_btn,
+            self.font_size_btn,
             self.bg_btn,
             self.history_btn,
         ]:
@@ -701,7 +718,7 @@ class DesktopTodo:
         )
         text.pack(side="left", fill="x", expand=True)
         if task.done:
-            text.configure(font=font.Font(family="Noto Sans CJK SC", size=12, weight="bold", overstrike=True))
+            text.configure(font=font.Font(family="Noto Sans CJK SC", size=self.font_setting("body_font_size"), weight="bold", overstrike=True))
 
         repeat_button = tk.Button(
             content,
@@ -746,6 +763,7 @@ class DesktopTodo:
         self.stop_fireworks()
         self.close_task_list_popup()
         self.close_color_popup()
+        self.close_font_popup()
         self.close_repeat_popup()
         self.close_custom_popup()
 
@@ -1290,6 +1308,7 @@ class DesktopTodo:
         month_dir = self.history_month_dir(date.today())
         self.rewrite_history_jsonl(date.today())
         self.close_color_popup()
+        self.close_font_popup()
         subprocess.Popen(["xdg-open", str(month_dir)])
         self.minimize_window()
 
@@ -1316,6 +1335,7 @@ class DesktopTodo:
         self.close_repeat_popup()
         self.close_custom_popup()
         self.close_color_popup()
+        self.close_font_popup()
 
         popup = tk.Toplevel(self.root)
         self.repeat_popup = popup
@@ -1583,6 +1603,7 @@ class DesktopTodo:
     def show_color_palette(self, target: str) -> None:
         self.close_repeat_popup()
         self.close_custom_popup()
+        self.close_font_popup()
         self.close_color_popup()
 
         colors = ACCENT_COLORS if target == "accent" else BACKGROUND_COLORS
@@ -1713,6 +1734,128 @@ class DesktopTodo:
             self.color_popup.destroy()
         self.color_popup = None
 
+    def show_font_size_popup(self) -> None:
+        self.close_repeat_popup()
+        self.close_custom_popup()
+        self.close_color_popup()
+        self.close_font_popup()
+
+        popup = tk.Toplevel(self.root)
+        self.font_popup = popup
+        popup.overrideredirect(True)
+        popup.attributes("-topmost", True)
+        popup.configure(bg=self.settings["background"], highlightthickness=2, highlightbackground=self.settings["accent"])
+
+        popup_width = 328
+        popup_height = 258
+        x = self.root.winfo_x() + max(24, self.root.winfo_width() - popup_width - 24)
+        y = self.root.winfo_y() + max(60, self.root.winfo_height() - popup_height - 24)
+        popup.geometry(f"{popup_width}x{popup_height}+{x}+{y}")
+        _pointer_x, _pointer_y, buttons = self.pointer_state()
+        self.last_pointer_buttons = buttons
+        self.start_outside_watch()
+
+        top = tk.Frame(popup, bg=self.settings["background"])
+        top.pack(fill="x", padx=12, pady=(10, 4))
+        tk.Label(
+            top,
+            text="调整字体大小",
+            bg=self.settings["background"],
+            fg=self.settings["text"],
+            font=self.small_font,
+        ).pack(side="left")
+        tk.Button(
+            top,
+            text="×",
+            command=self.close_font_popup,
+            bd=0,
+            width=2,
+            bg=self.settings["background"],
+            fg=self.settings["text"],
+            activebackground=self.mix(self.settings["accent"], "#ffffff", 0.14),
+            activeforeground=self.settings["text"],
+            font=self.small_font,
+        ).pack(side="right")
+
+        body = tk.Frame(popup, bg=self.settings["background"])
+        body.pack(fill="both", expand=True, padx=12, pady=(2, 12))
+
+        items = [
+            ("标题", "title_font_size", 10, 26),
+            ("正文/任务", "body_font_size", 9, 22),
+            ("小按钮/标签", "small_font_size", 7, 18),
+            ("图标按钮", "icon_font_size", 10, 28),
+        ]
+        for label_text, key, minimum, maximum in items:
+            row = tk.Frame(body, bg=self.settings["background"])
+            row.pack(fill="x", pady=4)
+            value_label = tk.Label(
+                row,
+                text=str(self.font_setting(key)),
+                bg=self.settings["background"],
+                fg=self.settings["text"],
+                font=self.small_font,
+                width=3,
+                anchor="e",
+            )
+            value_label.pack(side="right")
+            tk.Label(
+                row,
+                text=label_text,
+                bg=self.settings["background"],
+                fg=self.settings["text"],
+                font=self.small_font,
+                width=9,
+                anchor="w",
+            ).pack(side="left")
+            scale = tk.Scale(
+                row,
+                from_=minimum,
+                to=maximum,
+                orient="horizontal",
+                showvalue=False,
+                bd=0,
+                highlightthickness=0,
+                troughcolor=self.mix(self.settings["background"], "#ffffff", 0.14),
+                bg=self.settings["background"],
+                fg=self.settings["text"],
+                activebackground=self.settings["accent"],
+                length=170,
+                command=lambda value, setting_key=key, output=value_label: self.update_font_size(setting_key, value, output),
+            )
+            scale.set(self.font_setting(key))
+            scale.pack(side="left", fill="x", expand=True, padx=(8, 8))
+
+    def update_font_size(self, key: str, value: str, value_label: tk.Label | None = None) -> None:
+        try:
+            size = int(float(value))
+        except ValueError:
+            return
+        self.settings[key] = size
+        if value_label is not None and value_label.winfo_exists():
+            value_label.configure(text=str(size))
+        self.apply_font_settings()
+        self.save_settings()
+        self.render_tasks()
+
+    def apply_font_settings(self) -> None:
+        self.title_font.configure(size=self.font_setting("title_font_size"))
+        self.body_font.configure(size=self.font_setting("body_font_size"))
+        self.small_font.configure(size=self.font_setting("small_font_size"))
+        self.icon_font.configure(size=self.font_setting("icon_font_size"))
+
+    def font_setting(self, key: str) -> int:
+        default = int(DEFAULT_SETTINGS[key])
+        try:
+            return int(self.settings.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    def close_font_popup(self) -> None:
+        if self.font_popup is not None and self.font_popup.winfo_exists():
+            self.font_popup.destroy()
+        self.font_popup = None
+
     def toggle_topmost(self) -> None:
         self.root.attributes("-topmost", self.always_on_top.get())
 
@@ -1797,6 +1940,7 @@ class DesktopTodo:
     def force_close(self) -> None:
         try:
             self.close_color_popup()
+            self.close_font_popup()
             self.close_repeat_popup()
             self.close_custom_popup()
             self.close_task_list_popup()
@@ -1818,6 +1962,7 @@ class DesktopTodo:
         self.cancel_outside_watch()
         self.disable_task_mousewheel()
         self.close_color_popup()
+        self.close_font_popup()
         self.close_repeat_popup()
         self.close_custom_popup()
         self.close_task_list_popup()
@@ -1925,6 +2070,8 @@ class DesktopTodo:
     def hide_after_external_click(self, _event: tk.Event | None = None) -> None:
         if self.color_popup is not None and self.color_popup.winfo_exists():
             return
+        if self.font_popup is not None and self.font_popup.winfo_exists():
+            return
         if self.repeat_popup is not None and self.repeat_popup.winfo_exists():
             return
         if self.custom_popup is not None and self.custom_popup.winfo_exists():
@@ -1937,6 +2084,8 @@ class DesktopTodo:
         if self.root.state() == "withdrawn":
             return
         if self.color_popup is not None and self.color_popup.winfo_exists():
+            return
+        if self.font_popup is not None and self.font_popup.winfo_exists():
             return
         if self.repeat_popup is not None and self.repeat_popup.winfo_exists():
             return
@@ -1975,6 +2124,15 @@ class DesktopTodo:
                 self.start_outside_watch()
                 return
             self.close_color_popup()
+            if self.pointer_inside_window(self.root, pointer_x, pointer_y):
+                self.start_outside_watch()
+                return
+
+        if self.font_popup is not None and self.font_popup.winfo_exists():
+            if self.pointer_inside_window(self.font_popup, pointer_x, pointer_y):
+                self.start_outside_watch()
+                return
+            self.close_font_popup()
             if self.pointer_inside_window(self.root, pointer_x, pointer_y):
                 self.start_outside_watch()
                 return
