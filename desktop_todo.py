@@ -161,6 +161,9 @@ class DesktopTodo:
         self.commute_popup = None
         self.custom_popup = None
         self.task_list_popup = None
+        self.context_popup = None
+        self.rename_popup = None
+        self.rename_save_callback = None
         self.history_popup = None
         self.history_body = None
         self.history_selected_day = None
@@ -185,6 +188,7 @@ class DesktopTodo:
         self.firework_canvas = None
         self.firework_overlay = None
         self.firework_after_ids = []
+        self.expanded_interval_labels = set()
 
         self.title_font = self.make_font("title_font_size")
         self.body_font = self.make_font("body_font_size")
@@ -714,7 +718,12 @@ class DesktopTodo:
         self.task_count_badge.create_text(16, 16, text=count, fill="#ffffff", font=self.small_font)
 
     def visible_tasks(self) -> list[Task]:
-        return self.tasks_for_date(self.tasks, date.today())
+        return self.sorted_tasks_for_display(self.tasks_for_date(self.tasks, date.today()))
+
+    def sorted_tasks_for_display(self, tasks: list[Task]) -> list[Task]:
+        indexed_tasks = list(enumerate(tasks))
+        indexed_tasks.sort(key=lambda item: (1 if item[1].done else 0, 0 if item[1].starred else 1, item[0]))
+        return [task for _index, task in indexed_tasks]
 
     def tasks_for_date(self, tasks: list[Task], day: date) -> list[Task]:
         visible = []
@@ -727,13 +736,14 @@ class DesktopTodo:
         return visible
 
     def render_task(self, task: Task) -> None:
-        row = tk.Frame(self.task_frame, bg=self.settings["background"])
+        task_bg = self.pinned_task_bg(task)
+        row = tk.Frame(self.task_frame, bg=task_bg)
         row.pack(fill="x", pady=0)
 
         line = tk.Frame(row, bg=self.settings["accent"], height=1)
         line.pack(side="bottom", fill="x", padx=4)
 
-        content = tk.Frame(row, bg=self.settings["background"])
+        content = tk.Frame(row, bg=task_bg)
         content.pack(fill="x", padx=0, pady=8)
 
         check = tk.Button(
@@ -743,7 +753,7 @@ class DesktopTodo:
             bd=0,
             width=2,
             font=self.icon_font,
-            bg=self.settings["background"],
+            bg=task_bg,
             fg=self.done_color if task.done else self.settings["accent"],
             activebackground=self.row_bg,
             activeforeground=self.settings["text"],
@@ -754,7 +764,7 @@ class DesktopTodo:
             content,
             text=task.text,
             anchor="w",
-            bg=self.settings["background"],
+            bg=task_bg,
             fg=self.settings["text"] if not task.done else self.mix(self.settings["text"], self.settings["background"], 0.42),
             font=self.body_font,
             justify="left",
@@ -777,7 +787,7 @@ class DesktopTodo:
             bd=0,
             width=8,
             font=self.small_font,
-            bg=self.settings["background"],
+            bg=task_bg,
             fg=self.settings["text"],
             activebackground=self.row_bg,
             activeforeground=self.settings["text"],
@@ -799,7 +809,7 @@ class DesktopTodo:
             bd=0,
             width=2,
             font=self.icon_font,
-            bg=self.settings["background"],
+            bg=task_bg,
             fg=self.settings["accent"],
             activebackground=self.row_bg,
             activeforeground=self.settings["text"],
@@ -809,6 +819,12 @@ class DesktopTodo:
         row.bind("<Configure>", lambda event, label=text: label.configure(wraplength=max(90, event.width - 220)))
         for widget in (row, line, content, check, text, repeat_button, delete_button):
             self.bind_task_scroll_widget(widget)
+            widget.bind("<Button-3>", lambda event, selected=task: self.show_task_context_menu(event, selected))
+
+    def pinned_task_bg(self, task: Task) -> str:
+        if task.starred and not task.done:
+            return self.mix(self.settings["background"], self.settings["accent"], 0.1)
+        return self.settings["background"]
 
     def show_task_list_popup(self) -> None:
         self.stop_fireworks()
@@ -910,7 +926,7 @@ class DesktopTodo:
                 font=self.body_font,
             ).pack(anchor="center", pady=42)
         else:
-            for task in self.tasks:
+            for task in self.sorted_tasks_for_display(self.tasks):
                 self.render_task_list_item(frame, task, scroll_popup)
 
         for widget in (popup, area, canvas, frame):
@@ -923,72 +939,84 @@ class DesktopTodo:
         self.start_outside_watch()
 
     def render_task_list_item(self, parent: tk.Widget, task: Task, scroll_callback) -> None:
-        row = tk.Frame(parent, bg=self.settings["background"])
+        task_bg = self.pinned_task_bg(task)
+        row = tk.Frame(parent, bg=task_bg)
         row.pack(fill="x", pady=0)
         line = tk.Frame(row, bg=self.settings["accent"], height=1)
         line.pack(side="bottom", fill="x", padx=4)
-        content = tk.Frame(row, bg=self.settings["background"])
+        content = tk.Frame(row, bg=task_bg)
         content.pack(fill="x", pady=8)
+        content.grid_columnconfigure(0, minsize=54)
+        content.grid_columnconfigure(1, weight=1)
+        content.grid_columnconfigure(2, minsize=112)
+        content.grid_columnconfigure(3, minsize=52)
 
         visible_today = task in self.visible_tasks()
         status_text = "今日" if visible_today else "非今日"
         tk.Label(
             content,
             text=status_text,
-            bg=self.settings["background"],
+            bg=task_bg,
             fg=self.settings["text"],
             font=self.small_font,
             width=5,
             anchor="w",
-        ).pack(side="left", padx=(2, 8))
+        ).grid(row=0, column=0, sticky="w", padx=(2, 8))
 
         tk.Label(
             content,
             text=task.text,
-            bg=self.settings["background"],
+            bg=task_bg,
             fg=self.settings["text"],
             font=self.body_font,
             anchor="w",
-        ).pack(side="left", fill="x", expand=True)
+        ).grid(row=0, column=1, sticky="ew", padx=(0, 8))
 
         repeat_button = tk.Button(
             content,
-            text=self.repeat_label(task),
+            text=self.task_list_repeat_label(task),
             bd=0,
             width=8,
             font=self.small_font,
-            bg=self.settings["background"],
+            bg=task_bg,
             fg=self.settings["text"],
             activebackground=self.row_bg,
             activeforeground=self.settings["text"],
             highlightthickness=1,
             highlightbackground=self.settings["text"],
         )
-        repeat_button.configure(
-            command=lambda selected=task, anchor=repeat_button: self.show_repeat_popup(
-                anchor,
-                lambda value, custom=None, selected=selected: self.update_repeat_from_list(selected, value, custom),
+        if self.days_until_next_interval(task) is None:
+            repeat_button.configure(
+                command=lambda selected=task, anchor=repeat_button: self.show_repeat_popup(
+                    anchor,
+                    lambda value, custom=None, selected=selected: self.update_repeat_from_list(selected, value, custom),
+                )
             )
-        )
-        repeat_button.pack(side="left", padx=(8, 8))
+        else:
+            repeat_button.configure(
+                command=lambda selected=task, button=repeat_button: self.toggle_interval_label(selected, button)
+            )
+        repeat_button.grid(row=0, column=2, sticky="ew", padx=(0, 8))
 
-        tk.Button(
+        delete_button = tk.Button(
             content,
             text="×",
             command=lambda selected=task: self.delete_task_from_list(selected),
             bd=0,
             width=2,
             font=self.icon_font,
-            bg=self.settings["background"],
+            bg=task_bg,
             fg=self.settings["accent"],
             activebackground=self.row_bg,
             activeforeground=self.settings["text"],
-        ).pack(side="right")
+        )
+        delete_button.grid(row=0, column=3, sticky="ew")
 
-        for widget in row.winfo_children() + content.winfo_children() + [row, content, line]:
+        for widget in row.winfo_children() + content.winfo_children() + [row, content, line, repeat_button, delete_button]:
             widget.bind("<MouseWheel>", scroll_callback)
             widget.bind("<Button-4>", scroll_callback)
             widget.bind("<Button-5>", scroll_callback)
+            widget.bind("<Button-3>", lambda event, selected=task: self.show_task_context_menu(event, selected, True))
 
     def update_repeat_from_list(self, task: Task, repeat: str, custom: dict | None = None) -> None:
         self.update_repeat(task, repeat, custom)
@@ -998,7 +1026,153 @@ class DesktopTodo:
         self.delete_task(task)
         self.show_task_list_popup()
 
+    def show_task_context_menu(self, event: tk.Event, task: Task, refresh_task_list: bool = False) -> str:
+        self.close_context_popup()
+
+        popup = tk.Toplevel(self.root)
+        self.context_popup = popup
+        popup.overrideredirect(True)
+        popup.attributes("-topmost", True)
+        popup.configure(
+            bg=self.settings["background"],
+            highlightthickness=1,
+            highlightbackground=self.settings["text"],
+        )
+        popup.geometry(f"156x52+{event.x_root}+{event.y_root}" if refresh_task_list else f"156x104+{event.x_root}+{event.y_root}")
+
+        def rename_selected() -> None:
+            self.close_context_popup()
+            self.show_rename_popup(task, event.x_root, event.y_root, refresh_task_list)
+
+        def toggle_pin_selected() -> None:
+            self.close_context_popup()
+            self.toggle_task_pin(task, refresh_task_list)
+
+        rename_button = tk.Button(
+            popup,
+            text="重命名",
+            command=rename_selected,
+            bd=0,
+            bg=self.settings["background"],
+            fg=self.settings["text"],
+            activebackground=self.row_bg,
+            activeforeground=self.settings["text"],
+            font=self.small_font,
+        )
+        popup.grid_rowconfigure(0, weight=1, uniform="context_menu")
+        popup.grid_columnconfigure(0, weight=1)
+        rename_button.grid(row=0, column=0, sticky="nsew", padx=2, pady=(2, 2 if refresh_task_list else 0))
+
+        if not refresh_task_list:
+            popup.grid_rowconfigure(1, weight=1, uniform="context_menu")
+            pin_button = tk.Button(
+                popup,
+                text="取消置顶" if task.starred else "置顶",
+                command=toggle_pin_selected,
+                bd=0,
+                bg=self.settings["background"],
+                fg=self.settings["text"],
+                activebackground=self.row_bg,
+                activeforeground=self.settings["text"],
+                font=self.small_font,
+            )
+            pin_button.grid(row=1, column=0, sticky="nsew", padx=2, pady=(0, 2))
+
+        _pointer_x, _pointer_y, buttons = self.pointer_state()
+        self.last_pointer_buttons = buttons
+        self.start_outside_watch()
+        return "break"
+
+    def toggle_task_pin(self, task: Task, refresh_task_list: bool = False) -> None:
+        task.starred = not task.starred
+        self.save_tasks()
+        self.render_tasks()
+        if refresh_task_list and self.task_list_popup is not None:
+            self.show_task_list_popup()
+
+    def close_context_popup(self) -> None:
+        if self.context_popup is not None and self.context_popup.winfo_exists():
+            self.context_popup.destroy()
+        self.context_popup = None
+
+    def show_rename_popup(self, task: Task, x: int, y: int, refresh_task_list: bool = False) -> None:
+        self.close_rename_popup(save=True)
+
+        popup = tk.Toplevel(self.root)
+        self.rename_popup = popup
+        popup.overrideredirect(True)
+        popup.attributes("-topmost", True)
+        popup.configure(
+            bg=self.settings["background"],
+            highlightthickness=2,
+            highlightbackground=self.settings["text"],
+        )
+
+        name = tk.StringVar(value=task.text)
+        popup.geometry(f"360x112+{x}+{y}")
+
+        tk.Label(
+            popup,
+            text="重命名任务",
+            bg=self.settings["background"],
+            fg=self.settings["text"],
+            font=self.body_font,
+        ).pack(anchor="w", padx=14, pady=(12, 8))
+
+        entry = tk.Entry(
+            popup,
+            textvariable=name,
+            bd=0,
+            insertbackground=self.settings["text"],
+            bg=self.row_bg,
+            fg=self.settings["text"],
+            font=self.body_font,
+            highlightthickness=1,
+            highlightbackground=self.settings["text"],
+            highlightcolor=self.settings["accent"],
+        )
+        entry.pack(fill="x", padx=14, ipady=6)
+
+        def save_name() -> None:
+            new_name = name.get().strip()
+            if not new_name:
+                self.close_rename_popup(save=False)
+                return
+            task.text = new_name
+            self.save_tasks()
+            self.close_rename_popup(save=False)
+            self.render_tasks()
+            if refresh_task_list and self.task_list_popup is not None:
+                self.show_task_list_popup()
+
+        self.rename_save_callback = save_name
+        entry.bind("<Return>", lambda _event: save_name())
+        entry.bind("<Escape>", lambda _event: self.close_rename_popup(save=False))
+        popup.lift()
+        popup.grab_set()
+        entry.focus_force()
+        entry.selection_range(0, "end")
+        self.force_x11_focus(entry)
+        popup.after(40, lambda: (entry.focus_force(), self.force_x11_focus(entry)))
+
+    def close_rename_popup(self, *, save: bool = False) -> None:
+        if save and self.rename_save_callback is not None:
+            callback = self.rename_save_callback
+            self.rename_save_callback = None
+            callback()
+            return
+        self.rename_save_callback = None
+        if self.rename_popup is not None and self.rename_popup.winfo_exists():
+            try:
+                self.rename_popup.grab_release()
+            except tk.TclError:
+                pass
+            self.rename_popup.destroy()
+        self.rename_popup = None
+
     def close_task_list_popup(self) -> None:
+        self.close_context_popup()
+        self.close_rename_popup(save=True)
         if self.task_list_popup is not None and self.task_list_popup.winfo_exists():
             self.task_list_popup.destroy()
         self.task_list_popup = None
@@ -1036,7 +1210,16 @@ class DesktopTodo:
         self.focus_entry()
 
     def toggle_task(self, task: Task) -> None:
+        task_was_done = task.done
         task.done = not task.done
+        if task_was_done and not task.done:
+            task.starred = False
+        if task.repeat == "自定义" and (task.custom or {}).get("type") == "day_interval":
+            if task.done:
+                task.custom = task.custom or {}
+                task.custom["last_done_on"] = date.today().isoformat()
+            elif task_was_done and task.custom and task.custom.get("last_done_on") == date.today().isoformat():
+                task.custom.pop("last_done_on", None)
         self.save_tasks()
         self.render_tasks()
 
@@ -1073,6 +1256,42 @@ class DesktopTodo:
             return "".join(labels) if labels else "自定义"
         return "自定义"
 
+    def task_list_repeat_label(self, task: Task) -> str:
+        label = self.repeat_label(task)
+        days_left = self.days_until_next_interval(task)
+        if days_left is None or id(task) not in self.expanded_interval_labels:
+            return label
+        if days_left == 0:
+            return "今天"
+        return f"剩{days_left}天"
+
+    def toggle_interval_label(self, task: Task, button: tk.Button) -> None:
+        task_key = id(task)
+        if task_key in self.expanded_interval_labels:
+            self.expanded_interval_labels.remove(task_key)
+        else:
+            self.expanded_interval_labels.add(task_key)
+        button.configure(text=self.task_list_repeat_label(task))
+
+    def days_until_next_interval(self, task: Task) -> int | None:
+        if task.repeat != "自定义":
+            return None
+        custom = task.custom or {}
+        if custom.get("type") != "day_interval":
+            return None
+
+        today = date.today()
+        try:
+            start = date.fromisoformat(custom.get("last_done_on") or custom.get("start_date") or task.created_on or today.isoformat())
+        except ValueError:
+            start = today
+
+        interval = max(1, int(custom.get("interval_days", 1)))
+        next_due = start + timedelta(days=interval)
+        while next_due < today:
+            next_due += timedelta(days=interval)
+        return max(0, (next_due - today).days)
+
     def default_custom_repeat(self) -> dict:
         return {
             "type": "weekdays",
@@ -1088,10 +1307,12 @@ class DesktopTodo:
 
         if custom.get("type") == "day_interval":
             try:
-                start = date.fromisoformat(custom.get("start_date") or task.created_on or day.isoformat())
+                start = date.fromisoformat(custom.get("last_done_on") or custom.get("start_date") or task.created_on or day.isoformat())
             except ValueError:
                 start = day
             interval = max(1, int(custom.get("interval_days", 1)))
+            if custom.get("last_done_on") and day == start:
+                return True
             day_delta = (day - start).days
             if day_delta < interval:
                 return False
@@ -2498,6 +2719,8 @@ class DesktopTodo:
             self.close_commute_popup()
             self.close_repeat_popup()
             self.close_custom_popup()
+            self.close_context_popup()
+            self.close_rename_popup(save=True)
             self.close_task_list_popup()
             self.close_history_popup()
         except Exception:
@@ -2522,6 +2745,8 @@ class DesktopTodo:
         self.close_commute_popup()
         self.close_repeat_popup()
         self.close_custom_popup()
+        self.close_context_popup()
+        self.close_rename_popup(save=True)
         self.close_task_list_popup()
         self.close_history_popup()
         self.window_locked = False
@@ -2636,6 +2861,10 @@ class DesktopTodo:
             return
         if self.custom_popup is not None and self.custom_popup.winfo_exists():
             return
+        if self.context_popup is not None and self.context_popup.winfo_exists():
+            return
+        if self.rename_popup is not None and self.rename_popup.winfo_exists():
+            return
         if self.task_list_popup is not None and self.task_list_popup.winfo_exists():
             return
         if self.history_popup is not None and self.history_popup.winfo_exists():
@@ -2654,6 +2883,10 @@ class DesktopTodo:
         if self.repeat_popup is not None and self.repeat_popup.winfo_exists():
             return
         if self.custom_popup is not None and self.custom_popup.winfo_exists():
+            return
+        if self.context_popup is not None and self.context_popup.winfo_exists():
+            return
+        if self.rename_popup is not None and self.rename_popup.winfo_exists():
             return
         if self.task_list_popup is not None and self.task_list_popup.winfo_exists():
             return
@@ -2729,6 +2962,32 @@ class DesktopTodo:
             if self.pointer_inside_window(self.root, pointer_x, pointer_y):
                 self.start_outside_watch()
                 return
+
+        if self.context_popup is not None and self.context_popup.winfo_exists():
+            if self.pointer_inside_window(self.context_popup, pointer_x, pointer_y):
+                self.start_outside_watch()
+                return
+            self.close_context_popup()
+            if self.pointer_inside_window(self.root, pointer_x, pointer_y):
+                self.start_outside_watch()
+                return
+            if self.task_list_popup is not None and self.task_list_popup.winfo_exists():
+                if self.pointer_inside_window(self.task_list_popup, pointer_x, pointer_y):
+                    self.start_outside_watch()
+                    return
+
+        if self.rename_popup is not None and self.rename_popup.winfo_exists():
+            if self.pointer_inside_window(self.rename_popup, pointer_x, pointer_y):
+                self.start_outside_watch()
+                return
+            self.close_rename_popup(save=True)
+            if self.pointer_inside_window(self.root, pointer_x, pointer_y):
+                self.start_outside_watch()
+                return
+            if self.task_list_popup is not None and self.task_list_popup.winfo_exists():
+                if self.pointer_inside_window(self.task_list_popup, pointer_x, pointer_y):
+                    self.start_outside_watch()
+                    return
 
         if self.task_list_popup is not None and self.task_list_popup.winfo_exists():
             if self.pointer_inside_window(self.task_list_popup, pointer_x, pointer_y):
