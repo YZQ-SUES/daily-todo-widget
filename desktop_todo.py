@@ -24,6 +24,7 @@ from gi.repository import Gtk
 APP_DIR = Path(__file__).resolve().parent
 DATA_FILE = APP_DIR / "tasks.json"
 SETTINGS_FILE = APP_DIR / "settings.json"
+DAILY_STATUS_FILE = APP_DIR / "daily_status.json"
 TRAY_ICON_FILE = APP_DIR / "assets" / "tray_icon.png"
 HISTORY_ROOT = APP_DIR / "history"
 LEGACY_HISTORY_DB_FILE = APP_DIR / "daily_history.sqlite3"
@@ -130,6 +131,7 @@ class Task:
 class DesktopTodo:
     def __init__(self) -> None:
         self.settings = self.load_settings()
+        self.daily_status = self.load_daily_status()
         self.root = tk.Tk()
         self.root.title("今日待办")
         self.root.configure(bg=self.settings["background"])
@@ -156,13 +158,20 @@ class DesktopTodo:
         self.color_popup = None
         self.font_popup = None
         self.repeat_popup = None
+        self.commute_popup = None
         self.custom_popup = None
         self.task_list_popup = None
+        self.history_popup = None
+        self.history_body = None
+        self.history_selected_day = None
+        self.history_completed = []
+        self.history_incomplete = []
         self.status_icon = None
         self.status_menu = None
         self.gtk_thread = None
         self.hide_after_id = None
         self.outside_watch_id = None
+        self.work_timer_after_id = None
         self.x11 = self.init_x11()
         self.last_pointer_buttons = 0
         self.window_locked = False
@@ -170,6 +179,7 @@ class DesktopTodo:
         self.new_task = tk.StringVar()
         self.new_repeat = tk.StringVar(value="单次")
         self.new_custom = None
+        self.current_day_key = date.today().isoformat()
         self.today_all_done = False
         self.celebration_enabled = False
         self.firework_canvas = None
@@ -248,13 +258,38 @@ class DesktopTodo:
         self.title_label.bind("<ButtonPress-1>", self.start_drag)
         self.title_label.bind("<B1-Motion>", self.drag_window)
 
+        self.header_actions = tk.Frame(self.header, bg=self.settings["background"])
+        self.header_actions.pack(side="right")
+
+        self.checkin_btn = tk.Button(
+            self.header_actions,
+            text="到岗",
+            command=self.toggle_checkin,
+            bd=0,
+            font=self.small_font,
+            highlightthickness=1,
+        )
+        self.checkin_btn.pack(side="left", padx=(0, 8), ipadx=8, ipady=2)
+
+        self.commute_btn = tk.Button(
+            self.header_actions,
+            text="通勤",
+            command=self.show_commute_popup,
+            bd=0,
+            font=self.small_font,
+            highlightthickness=1,
+        )
+        self.commute_btn.pack(side="left", ipadx=8, ipady=2)
+
+        self.update_daily_status_buttons()
+        self.schedule_work_timer_tick()
+
         self.date_label = tk.Label(
             self.header,
-            text=datetime.now().strftime("%-m月%d日 · %H:%M"),
+            text="",
             font=self.small_font,
             anchor="e",
         )
-        self.date_label.pack(side="right")
         self.date_label.bind("<ButtonPress-1>", self.start_drag)
         self.date_label.bind("<B1-Motion>", self.drag_window)
 
@@ -357,7 +392,7 @@ class DesktopTodo:
         self.history_btn = tk.Button(
             footer,
             text="历史存档",
-            command=self.open_history_directory,
+            command=self.show_history_popup,
             bd=0,
             font=self.small_font,
         )
@@ -424,8 +459,17 @@ class DesktopTodo:
         self.root.configure(bg=bg)
         self.panel.configure(bg=bg, highlightbackground=accent, highlightcolor=accent)
         self.header.configure(bg=bg)
+        self.header_actions.configure(bg=bg)
         self.title_label.configure(bg=bg, fg=text)
         self.date_label.configure(bg=bg, fg=text)
+        for button in (self.checkin_btn, self.commute_btn):
+            button.configure(
+                bg=bg,
+                fg=text,
+                activebackground=hover,
+                activeforeground=text,
+                highlightbackground=text,
+            )
         self.progress_canvas.configure(bg=bg)
         self.status_label.configure(bg=bg, fg=text)
         self.task_area.configure(bg=bg)
@@ -769,6 +813,8 @@ class DesktopTodo:
     def show_task_list_popup(self) -> None:
         self.stop_fireworks()
         self.close_task_list_popup()
+        self.close_history_popup()
+        self.close_commute_popup()
         self.close_color_popup()
         self.close_font_popup()
         self.close_repeat_popup()
@@ -1058,6 +1104,180 @@ class DesktopTodo:
         self.save_tasks()
         self.render_tasks()
 
+    def today_status(self) -> dict:
+        return self.status_for_day(date.today())
+
+    def status_for_day(self, target_day: date) -> dict:
+        key = target_day.isoformat()
+        status = self.daily_status.setdefault(
+            key,
+            {
+                "at_work": False,
+                "arrivals": [],
+                "leaves": [],
+                "sessions": [],
+                "current_start": "",
+                "commute": "unknown",
+            },
+        )
+        status.setdefault("at_work", False)
+        status.setdefault("arrivals", [])
+        status.setdefault("leaves", [])
+        status.setdefault("sessions", [])
+        status.setdefault("current_start", "")
+        status.setdefault("commute", "unknown")
+        return status
+
+    def toggle_checkin(self) -> None:
+        status = self.today_status()
+        now = datetime.now()
+        timestamp = now.isoformat(timespec="minutes")
+        if status.get("at_work"):
+            status["at_work"] = False
+            status["leaves"].append(timestamp)
+            start = status.get("current_start") or (status["arrivals"][-1] if status["arrivals"] else timestamp)
+            status["sessions"].append({"start": start, "end": timestamp})
+            status["current_start"] = ""
+        else:
+            status["at_work"] = True
+            status["arrivals"].append(timestamp)
+            status["current_start"] = timestamp
+        self.save_daily_status()
+        self.update_daily_status_buttons()
+        self.archive_day(date.today().isoformat(), self.visible_tasks())
+
+    def show_commute_popup(self) -> None:
+        self.close_commute_popup()
+        self.close_repeat_popup()
+        self.close_custom_popup()
+        self.close_color_popup()
+        self.close_font_popup()
+        self.close_history_popup()
+
+        popup = tk.Toplevel(self.root)
+        self.commute_popup = popup
+        popup.overrideredirect(True)
+        popup.attributes("-topmost", True)
+        popup.configure(
+            bg=self.settings["background"],
+            highlightthickness=1,
+            highlightbackground=self.settings["text"],
+        )
+
+        popup_width = max(106, self.commute_btn.winfo_width())
+        x = self.commute_btn.winfo_rootx()
+        y = self.commute_btn.winfo_rooty() + self.commute_btn.winfo_height() + 4
+        popup.geometry(f"{popup_width}x108+{x}+{y}")
+
+        options = [
+            ("未记录", "unknown"),
+            ("走路", "walk"),
+            ("骑车", "bike"),
+        ]
+        for label, value in options:
+            button = tk.Button(
+                popup,
+                text=label,
+                command=lambda selected=value: self.set_commute_mode(selected),
+                bd=0,
+                bg=self.settings["background"],
+                fg=self.settings["text"],
+                activebackground=self.mix(self.settings["background"], "#ffffff", 0.12),
+                activeforeground=self.settings["text"],
+                font=self.small_font,
+                highlightthickness=1,
+                highlightbackground=self.settings["text"],
+            )
+            button.pack(fill="x", padx=4, pady=(4, 0), ipady=2)
+
+        _pointer_x, _pointer_y, buttons = self.pointer_state()
+        self.last_pointer_buttons = buttons
+        self.start_outside_watch()
+
+    def set_commute_mode(self, next_value: str) -> None:
+        status = self.today_status()
+        status["commute"] = next_value
+        self.save_daily_status()
+        self.update_daily_status_buttons()
+        self.archive_day(date.today().isoformat(), self.visible_tasks())
+        self.close_commute_popup()
+
+    def close_commute_popup(self) -> None:
+        if self.commute_popup is not None and self.commute_popup.winfo_exists():
+            self.commute_popup.destroy()
+        self.commute_popup = None
+
+    def update_daily_status_buttons(self) -> None:
+        if not hasattr(self, "checkin_btn"):
+            return
+        status = self.today_status()
+        duration = self.work_duration_for_day(date.today())
+        action = "离岗" if status.get("at_work") else "到岗"
+        self.checkin_btn.configure(text=f"{action} {self.format_duration(duration)}")
+        commute_labels = {
+            "unknown": "通勤",
+            "walk": "走路",
+            "bike": "骑车",
+        }
+        self.commute_btn.configure(text=commute_labels.get(status.get("commute"), "通勤"))
+
+    def schedule_work_timer_tick(self) -> None:
+        if self.work_timer_after_id is not None:
+            try:
+                self.root.after_cancel(self.work_timer_after_id)
+            except Exception:
+                pass
+        self.update_daily_status_buttons()
+        self.work_timer_after_id = self.root.after(30000, self.schedule_work_timer_tick)
+
+    def work_duration_for_day(self, target_day: date) -> int:
+        status = self.status_for_day(target_day)
+        total = 0
+        for session in status.get("sessions", []):
+            total += self.session_seconds(session.get("start"), session.get("end"), target_day)
+        if status.get("at_work") and status.get("current_start"):
+            total += self.session_seconds(status.get("current_start"), datetime.now().isoformat(timespec="minutes"), target_day)
+        return max(0, total)
+
+    def session_seconds(self, start_text: str | None, end_text: str | None, target_day: date) -> int:
+        if not start_text or not end_text:
+            return 0
+        try:
+            start = datetime.fromisoformat(start_text)
+            end = datetime.fromisoformat(end_text)
+        except ValueError:
+            return 0
+        day_start = datetime.combine(target_day, datetime.min.time())
+        day_end = day_start + timedelta(days=1)
+        start = max(start, day_start)
+        end = min(end, day_end)
+        if end <= start:
+            return 0
+        return int((end - start).total_seconds())
+
+    def format_duration(self, seconds: int) -> str:
+        hours, remainder = divmod(max(0, seconds), 3600)
+        minutes = remainder // 60
+        return f"{hours:02d}:{minutes:02d}"
+
+    def daily_meta_for_day(self, target_day: date) -> dict:
+        status = self.status_for_day(target_day)
+        commute_labels = {
+            "unknown": "未记录",
+            "walk": "走路",
+            "bike": "骑车",
+        }
+        return {
+            "at_work": bool(status.get("at_work")),
+            "arrivals": status.get("arrivals", []),
+            "leaves": status.get("leaves", []),
+            "sessions": status.get("sessions", []),
+            "work_duration_seconds": self.work_duration_for_day(target_day),
+            "work_duration": self.format_duration(self.work_duration_for_day(target_day)),
+            "commute": status.get("commute", "unknown"),
+            "commute_label": commute_labels.get(status.get("commute"), "未记录"),
+        }
+
     def init_history_storage(self) -> None:
         HISTORY_ROOT.mkdir(exist_ok=True)
         self.organize_history_by_year()
@@ -1073,10 +1293,14 @@ class DesktopTodo:
                 incomplete_json TEXT NOT NULL,
                 completed_count INTEGER NOT NULL,
                 incomplete_count INTEGER NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                meta_json TEXT NOT NULL DEFAULT '{}'
             )
             """
         )
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(daily_records)").fetchall()}
+        if "meta_json" not in columns:
+            connection.execute("ALTER TABLE daily_records ADD COLUMN meta_json TEXT NOT NULL DEFAULT '{}'")
         connection.commit()
 
     def history_month_dir(self, day: date) -> Path:
@@ -1140,6 +1364,7 @@ class DesktopTodo:
                     "- completed_count: 完成数量。",
                     "- incomplete_count: 未完成数量。",
                     "- created_at: 写入记录的时间。",
+                    "- meta: 当天附加状态，比如到岗/离岗时间、通勤方式。",
                     "",
                     "任务字段：text 为任务文字，done 为完成状态，repeat 为 单次/每天/工作日。",
                 ]
@@ -1187,11 +1412,12 @@ class DesktopTodo:
                         incomplete_json,
                         completed_count,
                         incomplete_count,
-                        created_at
+                        created_at,
+                        meta_json
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    row,
+                    (*row, "{}"),
                 )
                 connection.commit()
             finally:
@@ -1255,6 +1481,7 @@ class DesktopTodo:
         created_at = datetime.now().isoformat(timespec="seconds")
         completed_json = json.dumps(completed, ensure_ascii=False)
         incomplete_json = json.dumps(incomplete, ensure_ascii=False)
+        meta_json = json.dumps(self.daily_meta_for_day(record_day), ensure_ascii=False)
 
         connection = sqlite3.connect(self.history_db_file(record_day))
         try:
@@ -1267,9 +1494,10 @@ class DesktopTodo:
                     incomplete_json,
                     completed_count,
                     incomplete_count,
-                    created_at
+                    created_at,
+                    meta_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record_date,
@@ -1278,6 +1506,7 @@ class DesktopTodo:
                     len(completed),
                     len(incomplete),
                     created_at,
+                    meta_json,
                 ),
             )
             connection.commit()
@@ -1291,7 +1520,7 @@ class DesktopTodo:
             self.init_history_db(connection)
             rows = connection.execute(
                 """
-                SELECT record_date, completed_json, incomplete_json, completed_count, incomplete_count, created_at
+                SELECT record_date, completed_json, incomplete_json, completed_count, incomplete_count, created_at, meta_json
                 FROM daily_records
                 ORDER BY record_date
                 """
@@ -1308,6 +1537,7 @@ class DesktopTodo:
                     "completed_count": row[3],
                     "incomplete_count": row[4],
                     "created_at": row[5],
+                    "meta": json.loads(row[6] or "{}"),
                 }
                 history_file.write(json.dumps(record, ensure_ascii=False) + "\n")
 
@@ -1318,6 +1548,301 @@ class DesktopTodo:
         self.close_font_popup()
         subprocess.Popen(["xdg-open", str(month_dir)])
         self.minimize_window()
+
+    def show_history_popup(self) -> None:
+        self.stop_fireworks()
+        self.close_task_list_popup()
+        self.close_color_popup()
+        self.close_font_popup()
+        self.close_commute_popup()
+        self.close_repeat_popup()
+        self.close_custom_popup()
+        self.close_history_popup()
+
+        popup = tk.Toplevel(self.root)
+        self.history_popup = popup
+        popup.overrideredirect(True)
+        popup.attributes("-topmost", True)
+        popup.configure(
+            bg=self.settings["background"],
+            highlightthickness=2,
+            highlightbackground=self.settings["text"],
+        )
+
+        popup_width = 620
+        popup_height = 560
+        x = self.root.winfo_rootx() + max(24, self.root.winfo_width() - popup_width - 24)
+        y = self.root.winfo_rooty() + 84
+        popup.geometry(f"{popup_width}x{popup_height}+{x}+{y}")
+
+        top = tk.Frame(popup, bg=self.settings["background"])
+        top.pack(fill="x", padx=14, pady=(12, 8))
+        tk.Label(
+            top,
+            text="历史存档",
+            bg=self.settings["background"],
+            fg=self.settings["text"],
+            font=self.body_font,
+        ).pack(side="left")
+        tk.Button(
+            top,
+            text="×",
+            command=self.close_history_popup,
+            bd=0,
+            width=2,
+            bg=self.settings["background"],
+            fg=self.settings["text"],
+            activebackground=self.mix(self.settings["background"], "#ffffff", 0.12),
+            activeforeground=self.settings["text"],
+            font=self.body_font,
+        ).pack(side="right")
+        tk.Button(
+            top,
+            text="打开目录",
+            command=self.open_selected_history_directory,
+            bd=0,
+            bg=self.settings["background"],
+            fg=self.settings["text"],
+            activebackground=self.mix(self.settings["background"], "#ffffff", 0.12),
+            activeforeground=self.settings["text"],
+            font=self.small_font,
+        ).pack(side="right", padx=(0, 8), ipadx=8, ipady=2)
+
+        days = tk.Frame(popup, bg=self.settings["background"])
+        days.pack(fill="x", padx=14, pady=(0, 10))
+        today = date.today()
+        recent_days = [today - timedelta(days=offset) for offset in range(6, -1, -1)]
+        for index, day in enumerate(recent_days):
+            days.grid_columnconfigure(index, weight=1, uniform="history_days")
+            label = "今天" if day == today else ("昨天" if day == today - timedelta(days=1) else day.strftime("%m/%d"))
+            button = tk.Button(
+                days,
+                text=f"{day.day}日\n{label}",
+                command=lambda selected=day: self.select_history_day(selected),
+                bd=0,
+                bg=self.settings["background"],
+                fg=self.settings["text"],
+                activebackground=self.mix(self.settings["background"], "#ffffff", 0.12),
+                activeforeground=self.settings["text"],
+                font=self.small_font,
+                highlightthickness=1,
+                highlightbackground=self.settings["text"],
+            )
+            button.grid(row=0, column=index, sticky="ew", padx=3, ipady=3)
+
+        self.history_body = tk.Frame(popup, bg=self.settings["background"])
+        self.history_body.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+        self.select_history_day(today)
+
+        _pointer_x, _pointer_y, buttons = self.pointer_state()
+        self.last_pointer_buttons = buttons
+        self.start_outside_watch()
+
+    def select_history_day(self, record_day: date) -> None:
+        self.history_selected_day = record_day
+        self.history_completed, self.history_incomplete = self.load_history_record(record_day)
+        self.render_history_editor()
+
+    def render_history_editor(self) -> None:
+        if self.history_body is None or not self.history_body.winfo_exists():
+            return
+        for child in self.history_body.winfo_children():
+            child.destroy()
+
+        record_day = self.history_selected_day or date.today()
+        tk.Label(
+            self.history_body,
+            text=record_day.strftime("%Y年%m月%d日"),
+            bg=self.settings["background"],
+            fg=self.settings["text"],
+            font=self.small_font,
+            anchor="w",
+        ).pack(fill="x", pady=(0, 8))
+
+        add_row = tk.Frame(self.history_body, bg=self.settings["background"], highlightthickness=1, highlightbackground=self.settings["text"])
+        add_row.pack(fill="x", pady=(0, 10))
+        manual_text = tk.StringVar()
+        entry = tk.Entry(
+            add_row,
+            textvariable=manual_text,
+            bd=0,
+            bg=self.mix(self.settings["background"], "#ffffff", 0.08),
+            fg=self.settings["text"],
+            insertbackground=self.settings["accent"],
+            font=self.small_font,
+        )
+        entry.pack(side="left", fill="x", expand=True, padx=8, pady=8, ipady=4)
+        tk.Button(
+            add_row,
+            text="补完成",
+            command=lambda: self.add_manual_history_item(manual_text, True),
+            bd=0,
+            bg=self.settings["background"],
+            fg=self.settings["text"],
+            activebackground=self.mix(self.settings["background"], "#ffffff", 0.12),
+            activeforeground=self.settings["text"],
+            font=self.small_font,
+        ).pack(side="right", padx=(4, 8), ipady=4)
+        tk.Button(
+            add_row,
+            text="补未完成",
+            command=lambda: self.add_manual_history_item(manual_text, False),
+            bd=0,
+            bg=self.settings["background"],
+            fg=self.settings["text"],
+            activebackground=self.mix(self.settings["background"], "#ffffff", 0.12),
+            activeforeground=self.settings["text"],
+            font=self.small_font,
+        ).pack(side="right", padx=(4, 0), ipady=4)
+
+        lists = tk.Frame(self.history_body, bg=self.settings["background"])
+        lists.pack(fill="both", expand=True)
+        lists.grid_columnconfigure(0, weight=1, uniform="history_lists")
+        lists.grid_columnconfigure(1, weight=1, uniform="history_lists")
+        self.render_history_column(lists, "已完成", self.history_completed, True, 0)
+        self.render_history_column(lists, "未完成", self.history_incomplete, False, 1)
+
+    def render_history_column(self, parent: tk.Widget, title: str, items: list[dict], done: bool, column: int) -> None:
+        frame = tk.Frame(parent, bg=self.settings["background"], highlightthickness=1, highlightbackground=self.settings["text"])
+        frame.grid(row=0, column=column, sticky="nsew", padx=(0, 6) if column == 0 else (6, 0))
+        tk.Label(
+            frame,
+            text=f"{title} {len(items)}项",
+            bg=self.settings["background"],
+            fg=self.settings["text"],
+            font=self.small_font,
+            anchor="w",
+        ).pack(fill="x", padx=8, pady=(8, 4))
+
+        if not items:
+            tk.Label(
+                frame,
+                text="暂无记录",
+                bg=self.settings["background"],
+                fg=self.mix(self.settings["text"], self.settings["background"], 0.35),
+                font=self.small_font,
+            ).pack(anchor="center", pady=20)
+            return
+
+        for index, item in enumerate(items):
+            row = tk.Frame(frame, bg=self.settings["background"])
+            row.pack(fill="x", padx=8, pady=3)
+            tk.Button(
+                row,
+                text="✓" if done else "○",
+                command=lambda item_index=index, source_done=done: self.move_history_item(item_index, source_done),
+                bd=0,
+                width=2,
+                bg=self.settings["background"],
+                fg=self.settings["done"] if done else self.settings["accent"],
+                activebackground=self.mix(self.settings["background"], "#ffffff", 0.12),
+                activeforeground=self.settings["text"],
+                font=self.small_font,
+            ).pack(side="left")
+            tk.Label(
+                row,
+                text=str(item.get("text", "")),
+                bg=self.settings["background"],
+                fg=self.settings["text"],
+                font=self.small_font,
+                anchor="w",
+                wraplength=180,
+            ).pack(side="left", fill="x", expand=True, padx=(4, 0))
+
+    def load_history_record(self, record_day: date) -> tuple[list[dict], list[dict]]:
+        connection = sqlite3.connect(self.history_db_file(record_day))
+        try:
+            self.init_history_db(connection)
+            row = connection.execute(
+                "SELECT completed_json, incomplete_json FROM daily_records WHERE record_date = ?",
+                (record_day.isoformat(),),
+            ).fetchone()
+        finally:
+            connection.close()
+
+        if row:
+            return json.loads(row[0]), json.loads(row[1])
+
+        scheduled = []
+        for task in self.tasks_for_date(self.tasks, record_day):
+            item = asdict(task)
+            item["done"] = False
+            scheduled.append(item)
+        return [], scheduled
+
+    def save_history_record(self) -> None:
+        if self.history_selected_day is None:
+            return
+        record_day = self.history_selected_day
+        completed = [{**item, "done": True} for item in self.history_completed]
+        incomplete = [{**item, "done": False} for item in self.history_incomplete]
+        meta_json = json.dumps(self.daily_meta_for_day(record_day), ensure_ascii=False)
+        connection = sqlite3.connect(self.history_db_file(record_day))
+        try:
+            self.init_history_db(connection)
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO daily_records (
+                    record_date,
+                    completed_json,
+                    incomplete_json,
+                    completed_count,
+                    incomplete_count,
+                    created_at,
+                    meta_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record_day.isoformat(),
+                    json.dumps(completed, ensure_ascii=False),
+                    json.dumps(incomplete, ensure_ascii=False),
+                    len(completed),
+                    len(incomplete),
+                    datetime.now().isoformat(timespec="seconds"),
+                    meta_json,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        self.rewrite_history_jsonl(record_day)
+
+    def move_history_item(self, index: int, source_done: bool) -> None:
+        source = self.history_completed if source_done else self.history_incomplete
+        target = self.history_incomplete if source_done else self.history_completed
+        if not 0 <= index < len(source):
+            return
+        item = source.pop(index)
+        item["done"] = not source_done
+        target.append(item)
+        self.save_history_record()
+        self.render_history_editor()
+
+    def add_manual_history_item(self, text_var: tk.StringVar, done: bool) -> None:
+        text = text_var.get().strip()
+        if not text:
+            return
+        record_day = self.history_selected_day or date.today()
+        item = asdict(Task(text=text, done=done, repeat="手动", created_on=record_day.isoformat()))
+        if done:
+            self.history_completed.append(item)
+        else:
+            self.history_incomplete.append(item)
+        text_var.set("")
+        self.save_history_record()
+        self.render_history_editor()
+
+    def open_selected_history_directory(self) -> None:
+        record_day = self.history_selected_day or date.today()
+        self.rewrite_history_jsonl(record_day)
+        subprocess.Popen(["xdg-open", str(self.history_month_dir(record_day))])
+
+    def close_history_popup(self) -> None:
+        if self.history_popup is not None and self.history_popup.winfo_exists():
+            self.history_popup.destroy()
+        self.history_popup = None
+        self.history_body = None
 
     def schedule_midnight_rollover(self) -> None:
         now = datetime.now()
@@ -1343,6 +1868,8 @@ class DesktopTodo:
         self.close_custom_popup()
         self.close_color_popup()
         self.close_font_popup()
+        self.close_commute_popup()
+        self.close_history_popup()
 
         popup = tk.Toplevel(self.root)
         self.repeat_popup = popup
@@ -1612,6 +2139,8 @@ class DesktopTodo:
         self.close_custom_popup()
         self.close_font_popup()
         self.close_color_popup()
+        self.close_commute_popup()
+        self.close_history_popup()
 
         colors = ACCENT_COLORS if target == "accent" else BACKGROUND_COLORS
         title = "主题色" if target == "accent" else "背景色"
@@ -1746,6 +2275,8 @@ class DesktopTodo:
         self.close_custom_popup()
         self.close_color_popup()
         self.close_font_popup()
+        self.close_commute_popup()
+        self.close_history_popup()
 
         popup = tk.Toplevel(self.root)
         self.font_popup = popup
@@ -1964,9 +2495,11 @@ class DesktopTodo:
         try:
             self.close_color_popup()
             self.close_font_popup()
+            self.close_commute_popup()
             self.close_repeat_popup()
             self.close_custom_popup()
             self.close_task_list_popup()
+            self.close_history_popup()
         except Exception:
             pass
         try:
@@ -1986,9 +2519,11 @@ class DesktopTodo:
         self.disable_task_mousewheel()
         self.close_color_popup()
         self.close_font_popup()
+        self.close_commute_popup()
         self.close_repeat_popup()
         self.close_custom_popup()
         self.close_task_list_popup()
+        self.close_history_popup()
         self.window_locked = False
         self.root.withdraw()
 
@@ -2095,11 +2630,15 @@ class DesktopTodo:
             return
         if self.font_popup is not None and self.font_popup.winfo_exists():
             return
+        if self.commute_popup is not None and self.commute_popup.winfo_exists():
+            return
         if self.repeat_popup is not None and self.repeat_popup.winfo_exists():
             return
         if self.custom_popup is not None and self.custom_popup.winfo_exists():
             return
         if self.task_list_popup is not None and self.task_list_popup.winfo_exists():
+            return
+        if self.history_popup is not None and self.history_popup.winfo_exists():
             return
         self.root.after(80, self.hide_if_pointer_outside)
 
@@ -2110,11 +2649,15 @@ class DesktopTodo:
             return
         if self.font_popup is not None and self.font_popup.winfo_exists():
             return
+        if self.commute_popup is not None and self.commute_popup.winfo_exists():
+            return
         if self.repeat_popup is not None and self.repeat_popup.winfo_exists():
             return
         if self.custom_popup is not None and self.custom_popup.winfo_exists():
             return
         if self.task_list_popup is not None and self.task_list_popup.winfo_exists():
+            return
+        if self.history_popup is not None and self.history_popup.winfo_exists():
             return
 
         pointer_x = self.root.winfo_pointerx()
@@ -2160,6 +2703,15 @@ class DesktopTodo:
                 self.start_outside_watch()
                 return
 
+        if self.commute_popup is not None and self.commute_popup.winfo_exists():
+            if self.pointer_inside_window(self.commute_popup, pointer_x, pointer_y):
+                self.start_outside_watch()
+                return
+            self.close_commute_popup()
+            if self.pointer_inside_window(self.root, pointer_x, pointer_y):
+                self.start_outside_watch()
+                return
+
         if self.repeat_popup is not None and self.repeat_popup.winfo_exists():
             if self.pointer_inside_window(self.repeat_popup, pointer_x, pointer_y):
                 self.start_outside_watch()
@@ -2183,6 +2735,15 @@ class DesktopTodo:
                 self.start_outside_watch()
                 return
             self.close_task_list_popup()
+            if self.pointer_inside_window(self.root, pointer_x, pointer_y):
+                self.start_outside_watch()
+                return
+
+        if self.history_popup is not None and self.history_popup.winfo_exists():
+            if self.pointer_inside_window(self.history_popup, pointer_x, pointer_y):
+                self.start_outside_watch()
+                return
+            self.close_history_popup()
             if self.pointer_inside_window(self.root, pointer_x, pointer_y):
                 self.start_outside_watch()
                 return
@@ -2343,6 +2904,18 @@ class DesktopTodo:
     def save_tasks(self) -> None:
         data = [asdict(task) for task in self.tasks]
         DATA_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def load_daily_status(self) -> dict:
+        if not DAILY_STATUS_FILE.exists():
+            return {}
+        try:
+            data = json.loads(DAILY_STATUS_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def save_daily_status(self) -> None:
+        DAILY_STATUS_FILE.write_text(json.dumps(self.daily_status, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def load_settings(self) -> dict[str, str]:
         if not SETTINGS_FILE.exists():

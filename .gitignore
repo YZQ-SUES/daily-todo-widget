@@ -4,6 +4,7 @@ __pycache__/
 # Local user data
 tasks.json
 settings.json
+daily_status.json
 history/
 daily_history.sqlite3
 daily_history.jsonl
