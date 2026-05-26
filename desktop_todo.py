@@ -273,7 +273,7 @@ class DesktopTodo:
 
         self.commute_btn = tk.Button(
             self.header_actions,
-            text="通勤",
+            text="通勤:",
             command=self.show_commute_popup,
             bd=0,
             font=self.small_font,
@@ -1164,16 +1164,16 @@ class DesktopTodo:
             highlightbackground=self.settings["text"],
         )
 
-        popup_width = max(106, self.commute_btn.winfo_width())
-        x = self.commute_btn.winfo_rootx()
-        y = self.commute_btn.winfo_rooty() + self.commute_btn.winfo_height() + 4
-        popup.geometry(f"{popup_width}x108+{x}+{y}")
-
         options = [
-            ("未记录", "unknown"),
             ("走路", "walk"),
             ("骑车", "bike"),
         ]
+        popup_width = max(116, self.commute_btn.winfo_width())
+        popup_height = 12 + len(options) * 44
+        x = self.commute_btn.winfo_rootx()
+        y = self.commute_btn.winfo_rooty() + self.commute_btn.winfo_height() + 4
+        popup.geometry(f"{popup_width}x{popup_height}+{x}+{y}")
+
         for label, value in options:
             button = tk.Button(
                 popup,
@@ -1215,11 +1215,11 @@ class DesktopTodo:
         action = "离岗" if status.get("at_work") else "到岗"
         self.checkin_btn.configure(text=f"{action} {self.format_duration(duration)}")
         commute_labels = {
-            "unknown": "通勤",
-            "walk": "走路",
-            "bike": "骑车",
+            "unknown": "通勤:",
+            "walk": "通勤:走路",
+            "bike": "通勤:骑车",
         }
-        self.commute_btn.configure(text=commute_labels.get(status.get("commute"), "通勤"))
+        self.commute_btn.configure(text=commute_labels.get(status.get("commute"), "通勤:"))
 
     def schedule_work_timer_tick(self) -> None:
         if self.work_timer_after_id is not None:
