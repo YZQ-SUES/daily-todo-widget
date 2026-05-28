@@ -175,6 +175,8 @@ class DesktopTodo:
         self.hide_after_id = None
         self.outside_watch_id = None
         self.work_timer_after_id = None
+        self.reorder_after_id = None
+        self.task_rows_by_id = {}
         self.x11 = self.init_x11()
         self.last_pointer_buttons = 0
         self.window_locked = False
@@ -554,11 +556,12 @@ class DesktopTodo:
         self.entry_bg = entry_bg
         self.draw_progress()
 
-    def render_tasks(self) -> None:
+    def render_tasks(self, task_order: list[Task] | None = None, animate_from: dict[int, int] | None = None) -> None:
         for child in self.task_frame.winfo_children():
             child.destroy()
+        self.task_rows_by_id = {}
 
-        visible_tasks = self.visible_tasks()
+        visible_tasks = task_order if task_order is not None else self.visible_tasks()
         if not visible_tasks:
             tk.Label(
                 self.task_frame,
@@ -569,8 +572,112 @@ class DesktopTodo:
             ).pack(anchor="center", pady=42)
         else:
             for task in visible_tasks:
-                self.render_task(task)
+                self.task_rows_by_id[id(task)] = self.render_task(task)
 
+        done_count = sum(1 for task in visible_tasks if task.done)
+        self.status_label.configure(text=f"{done_count} / {len(visible_tasks)} 已完成")
+        self.update_task_count_badge()
+        self.draw_progress()
+        self.maybe_celebrate_completion(visible_tasks, done_count)
+        if animate_from:
+            self.animate_task_reorder(animate_from)
+
+    def current_task_positions(self) -> dict[int, int]:
+        self.task_frame.update_idletasks()
+        positions = {}
+        for task_key, row in self.task_rows_by_id.items():
+            if row.winfo_exists():
+                positions[task_key] = row.winfo_y()
+        return positions
+
+    def animate_task_reorder(self, previous_positions: dict[int, int]) -> None:
+        self.task_frame.update_idletasks()
+        width = max(1, self.task_frame.winfo_width())
+        rows = []
+        total_height = 0
+
+        for task_key, row in self.task_rows_by_id.items():
+            final_y = row.winfo_y()
+            start_y = previous_positions.get(task_key, final_y)
+            height = row.winfo_height()
+            total_height = max(total_height, final_y + height)
+            row.pack_forget()
+            row.place(x=0, y=start_y, width=width)
+            rows.append((row, start_y, final_y))
+
+        if not rows:
+            return
+
+        self.task_frame.configure(height=total_height)
+        self.task_canvas.configure(scrollregion=(0, 0, width, total_height))
+        frames = 16
+
+        def ease(progress: float) -> float:
+            return 1 - pow(1 - progress, 3)
+
+        def step(frame: int = 0) -> None:
+            progress = ease(frame / frames)
+            for row, start_y, final_y in rows:
+                if row.winfo_exists():
+                    y = int(start_y + (final_y - start_y) * progress)
+                    row.place_configure(y=y)
+            if frame < frames:
+                self.root.after(14, lambda: step(frame + 1))
+                return
+            for row, _start_y, final_y in rows:
+                if row.winfo_exists():
+                    row.place_configure(y=final_y)
+            self.task_canvas.configure(scrollregion=(0, 0, width, total_height))
+
+        step()
+
+    def animate_current_task_reorder(self, previous_positions: dict[int, int]) -> None:
+        self.task_frame.update_idletasks()
+        width = max(1, self.task_frame.winfo_width())
+        visible_tasks = self.visible_tasks()
+        rows = []
+        final_y = 0
+
+        for task in visible_tasks:
+            row = self.task_rows_by_id.get(id(task))
+            if row is None or not row.winfo_exists():
+                self.render_tasks()
+                return
+            start_y = previous_positions.get(id(task), row.winfo_y())
+            height = row.winfo_height()
+            row.pack_forget()
+            row.place(x=0, y=start_y, width=width)
+            rows.append((row, start_y, final_y))
+            final_y += height
+
+        if not rows:
+            return
+
+        self.task_frame.configure(height=final_y)
+        self.task_canvas.configure(scrollregion=(0, 0, width, final_y))
+        frames = 16
+
+        def ease(progress: float) -> float:
+            return 1 - pow(1 - progress, 3)
+
+        def step(frame: int = 0) -> None:
+            progress = ease(frame / frames)
+            for row, start_y, target_y in rows:
+                if row.winfo_exists():
+                    y = int(start_y + (target_y - start_y) * progress)
+                    row.place_configure(y=y)
+            if frame < frames:
+                self.root.after(14, lambda: step(frame + 1))
+                return
+            for row, _start_y, target_y in rows:
+                if row.winfo_exists():
+                    row.place_configure(y=target_y)
+            self.task_canvas.configure(scrollregion=(0, 0, width, final_y))
+
+        step()
+
+    def refresh_task_summary(self) -> None:
+        visible_tasks = self.visible_tasks()
         done_count = sum(1 for task in visible_tasks if task.done)
         self.status_label.configure(text=f"{done_count} / {len(visible_tasks)} 已完成")
         self.update_task_count_badge()
@@ -735,7 +842,7 @@ class DesktopTodo:
             visible.append(task)
         return visible
 
-    def render_task(self, task: Task) -> None:
+    def render_task(self, task: Task) -> tk.Frame:
         task_bg = self.pinned_task_bg(task)
         row = tk.Frame(self.task_frame, bg=task_bg)
         row.pack(fill="x", pady=0)
@@ -745,6 +852,7 @@ class DesktopTodo:
 
         content = tk.Frame(row, bg=task_bg)
         content.pack(fill="x", padx=0, pady=8)
+        row.task_content = content
 
         check = tk.Button(
             content,
@@ -771,6 +879,8 @@ class DesktopTodo:
             wraplength=210,
         )
         text.pack(side="left", fill="x", expand=True)
+        row.task_check = check
+        row.task_text = text
         if task.done:
             text.configure(
                 font=font.Font(
@@ -801,6 +911,7 @@ class DesktopTodo:
             )
         )
         repeat_button.pack(side="left", padx=(8, 8))
+        row.task_repeat = repeat_button
 
         delete_button = tk.Button(
             content,
@@ -815,11 +926,47 @@ class DesktopTodo:
             activeforeground=self.settings["text"],
         )
         delete_button.pack(side="right")
+        row.task_delete = delete_button
 
         row.bind("<Configure>", lambda event, label=text: label.configure(wraplength=max(90, event.width - 220)))
         for widget in (row, line, content, check, text, repeat_button, delete_button):
             self.bind_task_scroll_widget(widget)
             widget.bind("<Button-3>", lambda event, selected=task: self.show_task_context_menu(event, selected))
+        return row
+
+    def update_rendered_task_row(self, task: Task) -> None:
+        row = self.task_rows_by_id.get(id(task))
+        if row is None or not row.winfo_exists():
+            return
+        task_bg = self.pinned_task_bg(task)
+        row.configure(bg=task_bg)
+        text = getattr(row, "task_text", None)
+        check = getattr(row, "task_check", None)
+        repeat_button = getattr(row, "task_repeat", None)
+        delete_button = getattr(row, "task_delete", None)
+        content = getattr(row, "task_content", None)
+        if content is not None and content.winfo_exists():
+            content.configure(bg=task_bg)
+        if check is not None and check.winfo_exists():
+            check.configure(
+                text="✓" if task.done else "○",
+                bg=task_bg,
+                fg=self.done_color if task.done else self.settings["accent"],
+            )
+        if text is not None and text.winfo_exists():
+            text.configure(
+                bg=task_bg,
+                fg=self.settings["text"] if not task.done else self.mix(self.settings["text"], self.settings["background"], 0.42),
+                font=font.Font(
+                    family="Noto Sans CJK SC",
+                    size=-self.font_setting("body_font_size"),
+                    weight="bold",
+                    overstrike=task.done,
+                ),
+            )
+        for widget in (repeat_button, delete_button):
+            if widget is not None and widget.winfo_exists():
+                widget.configure(bg=task_bg)
 
     def pinned_task_bg(self, task: Task) -> str:
         if task.starred and not task.done:
@@ -1210,6 +1357,7 @@ class DesktopTodo:
         self.focus_entry()
 
     def toggle_task(self, task: Task) -> None:
+        previous_positions = self.current_task_positions()
         task_was_done = task.done
         task.done = not task.done
         if task_was_done and not task.done:
@@ -1221,7 +1369,9 @@ class DesktopTodo:
             elif task_was_done and task.custom and task.custom.get("last_done_on") == date.today().isoformat():
                 task.custom.pop("last_done_on", None)
         self.save_tasks()
-        self.render_tasks()
+        self.update_rendered_task_row(task)
+        self.refresh_task_summary()
+        self.animate_current_task_reorder(previous_positions)
 
     def delete_task(self, task: Task) -> None:
         self.tasks = [item for item in self.tasks if item is not task]
